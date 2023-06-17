@@ -1,7 +1,10 @@
 "use strict";
 
-import dom from "./dom.mjs";
+import { dom } from "./dom.mjs";
 import store from "./store.mjs";
+import err from "./err.mjs";
+import { format } from "date-fns";
+const { RunError, NotFoundError, ConnectionError } = err;
 
 // Variables
 let rawInput = null;
@@ -11,7 +14,7 @@ let curFav;
 const serverUrl = "http://api.openweathermap.org/data/2.5/weather";
 const apiKey = "afc9f2df39f9e9e49eeb1afac7034d35";
 // const apiKey = "bee4bd6edc3ca09763c0dc89f33c92c4"; // spare apiKey
-
+// localStorage.removeItem("keeper");
 let keeper = JSON.parse(store.get("keeper")) || [];
 
 // Helper functions
@@ -34,25 +37,19 @@ function toggleCheckbox() {
   const isChecked = dom.checkboxHeart.checked;
 
   if (isChecked) {
-    if (!keeper.includes(dom.nowPageCity.textContent)) {
-      // Add city to FAVS
-      keeper.push(dom.nowPageCity.textContent);
-      store.set("keeper", JSON.stringify(keeper));
-    }
+    keeper.push(dom.nowPageCity.textContent);
+    store.set("keeper", JSON.stringify(keeper));
   } else {
     console.log(keeper);
-    deleteFav(dom.nowPageCity.textContent);
-
-    // Delete from FAVs and save keeper
-    keeper = keeper.filter((city) => city !== uiCityName);
+    deleteFav(dom.nowPageCity.textContent, keeper);
     store.set("keeper", JSON.stringify(keeper));
   }
   renderFavs();
 }
 
 // Error
-function renderError(msg = "City not found!") {
-  dom.errorMsg.textContent = msg;
+function renderError(errorMessage) {
+  dom.errorMsg.textContent = errorMessage;
   dom.errorBox.classList.remove("hidden");
   dom.input.setAttribute("placeholder", "");
 }
@@ -63,21 +60,22 @@ function hideErrorBox() {
 }
 
 // Data processing
-function convertTime(time, tZone, boolean) {
+function convertTime(time, tZone, standard) {
   const date = new Date((time + tZone) * 1000);
 
-  if (boolean === true) {
-    const hours = ("0" + date.getUTCHours()).slice(-2);
-    const minutes = ("0" + date.getUTCMinutes()).slice(-2);
-    const formattedTime = hours + ":" + minutes;
-    return formattedTime;
+  if (standard === "HH:mm") {
+    // const hours = ("0" + date.getUTCHours()).slice(-2);
+    // const minutes = ("0" + date.getUTCMinutes()).slice(-2);
+    // const formattedTime = hours + ":" + minutes;
+
+    return format(date, standard);
   }
 
-  if (boolean === false) {
-    const options = { day: "numeric", month: "short" };
-    let formattedDate = date.toLocaleDateString("en-US", options);
+  if (standard === "MMM dd") {
+    // const options = { day: "numeric", month: "short" };
+    // let formattedDate = date.toLocaleDateString("en-US", options);
 
-    return formattedDate;
+    return format(date, standard);
   }
 }
 
@@ -86,96 +84,94 @@ function tempFormatted(data) {
 }
 
 // Promise
-function getJSON(url, msg) {
-  return fetch(url).then((response) => {
-    if (!response.ok) throw new Error(`${msg} ${response.status}`);
+async function getJSON(url) {
+  try {
+    const response = await fetch(url);
+    if (response.status === 404) {
+      throw new NotFoundError();
+    }
     return response.json();
-  });
+  } catch (err) {
+    if (err instanceof TypeError && err.message.includes("Failed to fetch")) {
+      throw new ConnectionError();
+    } else {
+      throw new RunError(`💥 ${err}`);
+    }
+  }
 }
 //%%%%%%%%%%%%%%% Business Logics  %%%%%%%%%%%%%%%%%%%%%
 
 // Process input (chained promises)
-function getData() {
-  // Defining current favourite
-  if (!curFav || curFav === null || curFav === undefined) {
-    curFav = store.get("curFav") || rawInput || keeper[0] || "Shymkent";
-  }
+async function getData() {
+  hideErrorBox();
+  try {
+    // Defining current favourite
+    if (!curFav || curFav === null || curFav === undefined) {
+      curFav = store.get("curFav") || rawInput || keeper[0] || "Shymkent";
+    }
 
-  if (!rawInput) {
-    rawInput = curFav;
-  }
-  // Store
-  store.set("curFav", curFav);
+    if (!rawInput) {
+      rawInput = curFav;
+    }
+    // Store
+    store.set("curFav", curFav);
 
-  const url = `${serverUrl}?q=${rawInput}&appid=${apiKey}&units=metric`;
-  getJSON(url, "City not found")
-    .then((data) => {
-      console.log("details ----");
-      const {
-        coord: { lon, lat },
-        main: { temp, feels_like: feels },
-        weather: [{ main: detWeather, icon }],
-        sys: { sunrise, sunset },
-        timezone: tZone,
-        name: uiCityName,
-      } = data;
+    const url = `${serverUrl}?q=${rawInput}&appid=${apiKey}&units=metric`;
+    const data = await getJSON(url, "City not found");
 
-      const detFeelsLike = tempFormatted(feels);
-      const uiTemp = tempFormatted(temp);
-      const detSunrise = convertTime(sunrise, tZone, true);
-      const detSunset = convertTime(sunset, tZone, true);
+    const {
+      coord: { lon, lat },
+      main: { temp, feels_like: feels },
+      weather: [{ main: detWeather, icon }],
+      sys: { sunrise, sunset },
+      timezone: tZone,
+      name: uiCityName,
+    } = data;
 
-      displayNow({
-        uiCityName,
-        uiTemp,
-        icon,
-      });
+    const detFeelsLike = tempFormatted(feels);
+    const uiTemp = tempFormatted(temp);
+    const detSunrise = convertTime(sunrise, tZone, "HH:mm");
+    const detSunset = convertTime(sunset, tZone, "HH:mm");
 
-      displayDetails({
-        detFeelsLike,
-        detWeather,
-        detSunrise,
-        detSunset,
-      });
-
-      getDataForecast({
-        lat,
-        lon,
-        tZone,
-      });
-
-      renderFavs();
-      // Handle the errors
-    })
-    .catch((err) => {
-      if (err.message.includes("Failed to fetch")) {
-        renderError(`💥 Error: Please check your internet connection`);
-      } else {
-        console.error(err);
-        renderError(`💥 Error: ${err.message}`);
-      }
+    displayNow({
+      uiCityName,
+      uiTemp,
+      icon,
     });
+
+    displayDetails({
+      detFeelsLike,
+      detWeather,
+      detSunrise,
+      detSunset,
+    });
+
+    getDataForecast({
+      lat,
+      lon,
+      tZone,
+    });
+
+    renderFavs();
+    // Handle the errors
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : err;
+    renderError(errorMessage);
+  }
 }
-
-function getDataForecast({ lat, lon, tZone }) {
+async function getDataForecast({ lat, lon, tZone }) {
   const forecastUrl = `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&appid=${apiKey}&units=metric`;
-  getJSON(forecastUrl, "Forecast not found")
-    .then((data) => {
-      // Destructuring: 3h forecasts (7 boxes)
-      const { list } = data;
-      const arr = list.slice(0, 7);
-      displayForecast(arr, tZone);
+  try {
+    const data = await getJSON(forecastUrl, "Forecast not found");
 
-      // Handle the errors
-    })
-    .catch((err) => {
-      if (err.message.includes("Failed to fetch")) {
-        renderError(`💥 Error: Please check your internet connection`);
-      } else {
-        console.error(err);
-        renderError(`💥 Error: ${err.message}`);
-      }
-    });
+    // Destructuring: 3h forecasts (7 boxes)
+    const { list } = data;
+    const arr = list.slice(0, 7);
+    displayForecast(arr, tZone);
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : err;
+    renderError(errorMessage);
+  }
 }
 
 // Display the data
@@ -219,13 +215,13 @@ function displayForecast(arr, tZone) {
     const copiedLi = dom.sourceForecast.cloneNode(true);
     // add date
     const fcDateText = copiedLi.querySelector(".fc-date-text");
-    const fcDate = convertTime(curTime, tZone, false);
+    const fcDate = convertTime(curTime, tZone, "MMM dd");
     fcDateText.textContent = fcDate;
     const detDateText = document.querySelector("#details-date");
     detDateText.textContent = fcDate;
     // add time
     const fcTimeText = copiedLi.querySelector(".fc-time-text");
-    const fcTime = convertTime(curTime, tZone, true);
+    const fcTime = convertTime(curTime, tZone, "HH:mm");
 
     fcTimeText.textContent = fcTime;
     // add temp abd feels like
@@ -255,7 +251,7 @@ function displayForecast(arr, tZone) {
 function renderFavs() {
   resetFavScr();
 
-  if (keeper.length === 0) return;
+  if (!keeper.length) return;
   keeper.forEach((city) => {
     // assemble a div
     const copiedDiv = dom.sourceFav.cloneNode(true);
@@ -277,12 +273,23 @@ function displayCurFav() {
   getData();
 }
 
-function deleteFav(uiCityName) {
-  keeper = keeper.filter((city) => city !== uiCityName);
+function deleteFav(uiCityName, keeper) {
+  // keeper = keeper.filter((city) => city !== uiCityName);
+  // Instead RECURSION:
+  function delCityRecursive(i = 0, keeper) {
+    console.log(i, keeper);
+    if (i > keeper.length) return;
+    if (keeper[i] === uiCityName) {
+      return keeper.splice(i, 1);
+    }
+    return delCityRecursive(i + 1, keeper);
+  }
+  delCityRecursive(0, keeper);
+
   if (dom.nowPageCity.textContent === uiCityName) {
     dom.checkboxHeart.checked = false;
   }
-  if (keeper.length === 0) {
+  if (!keeper.length) {
     curFav = uiCityName || "Shymkent";
   }
 
@@ -353,7 +360,8 @@ dom.parentFavs.addEventListener("click", function (event) {
     const targetText =
       target.parentElement.parentElement.querySelector(".text");
     uiCityName = targetText.textContent;
-    deleteFav(uiCityName);
+    console.log(keeper);
+    deleteFav(uiCityName, keeper);
   }
 });
 
